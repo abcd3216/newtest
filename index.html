@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <title>C語言線上AI互動學習平台 - 錯誤提示版</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.4.12/ace.js"></script>
+    <style>
+        body {
+            background-color: #f4f6f9;
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .top-right-buttons {
+            width: 80%;
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 10px;
+        }
+        .top-right-buttons button {
+            margin-left: 10px;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        #runBtn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        #editor {
+            width: 80%;
+            height: 300px;
+            border: 1px solid #ccc;
+            margin-bottom: 20px;
+        }
+        #tipsArea, #outputArea {
+            width: 80%;
+            background-color: #e6f7ff;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #91d5ff;
+            color: #333;
+            margin-bottom: 20px;
+        }
+        #tipsTitle, #outputTitle {
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <!-- 按鈕 -->
+    <div class="top-right-buttons">
+        <button id="runBtn">執行程式</button>
+    </div>
+
+    <!-- 編輯器 -->
+    <div id="editor">#include &lt;stdio.h&gt;
+
+</div>
+
+    <!-- 提示區 -->
+    <div id="tipsArea">
+        <div id="tipsTitle">Tips：</div>
+        <div id="tipsContent">目前尚未偵測到內容錯誤。</div>
+    </div>
+
+    <!-- 輸出 -->
+    <div id="outputArea">
+        <div id="outputTitle">目前輸入的程式碼：</div>
+        <pre id="outputContent"></pre>
+    </div>
+
+</div>
+
+<script>
+    const editor = ace.edit("editor");
+    editor.setTheme("ace/theme/github");
+    editor.session.setMode("ace/mode/c_cpp");
+    editor.setValue(""); // 一開始內容為空白
+
+    // 原始正確程式碼，初始不檢查
+    const initialCode = editor.getValue();
+    let hasChanged = false;
+
+    function checkErrors() {
+        const code = editor.getValue();
+        const lines = code.split('\n');
+        const annotations = [];
+        const tips = [];
+        let variables = new Set();
+        let functions = new Set(['printf', 'scanf', 'main']);
+
+        // C 語言型別與保留字
+        const cKeywords = ['int', 'float', 'double', 'char', 'void', 'if', 'for', 'while', 'switch', 'return', 'break', 'continue', 'else', 'do', 'case', 'default', 'sizeof', 'struct', 'typedef', 'union', 'enum', 'const', 'static', 'goto', 'volatile', 'register', 'extern', 'auto', 'signed', 'unsigned', 'long', 'short'];
+
+        // 如果內容還沒變動，不進行檢查
+        if (!hasChanged || code === initialCode) {
+            editor.session.clearAnnotations();
+            document.getElementById("tipsContent").innerHTML = "目前尚未偵測到內容錯誤。";
+            return;
+        }
+
+        // 檢查括號和引號配對
+        let bracketStack = [];
+        let quoteStack = [];
+        let inComment = false;
+        let inMultiLineComment = false;
+
+        lines.forEach((line, index) => {
+            const trimmed = line.trim();
+            
+            // 跳過預處理指令（如 #include）
+            if (trimmed.startsWith('#')) return;
+
+            // 檢查多行註解
+            if (trimmed.includes('/*')) inMultiLineComment = true;
+            if (trimmed.includes('*/')) inMultiLineComment = false;
+            if (inMultiLineComment) return;
+
+            // 檢查單行註解
+            if (trimmed.startsWith('//')) return;
+
+            // 檢查函式宣告（如 int main()）
+            const funcDeclare = trimmed.match(/(int|void|float|double|char)\s+(\w+)\s*\(.*\)\s*\{/);
+            if (funcDeclare) {
+                functions.add(funcDeclare[2]);
+                return; // 不當變數宣告處理
+            }
+
+            // 檢查括號配對
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                if (char === '(') bracketStack.push({ char, line: index, pos: i });
+                else if (char === ')') {
+                    if (bracketStack.length === 0) {
+                        annotations.push({
+                            row: index,
+                            column: i,
+                            text: "多餘的右括號 ')'",
+                            type: "error"
+                        });
+                        tips.push(`第 ${index + 1} 行：多餘的右括號 ')'。`);
+                    } else bracketStack.pop();
+                }
+            }
+
+            // 檢查引號配對
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                if (char === '"' || char === "'") {
+                    if (quoteStack.length === 0 || quoteStack[quoteStack.length - 1] !== char) {
+                        quoteStack.push(char);
+                    } else {
+                        quoteStack.pop();
+                    }
+                }
+            }
+
+            // 變數宣告和使用檢查
+            const varDeclare = trimmed.match(/(int|float|double|char)\s+(\w+)/);
+            if (varDeclare) {
+                // main 只允許作為函式名
+                if (varDeclare[2] === 'main') {
+                    annotations.push({
+                        row: index,
+                        column: trimmed.indexOf(varDeclare[2]),
+                        text: `變數名稱 'main' 是保留字，只能作為函式名。`,
+                        type: "error"
+                    });
+                    tips.push(`第 ${index + 1} 行：變數名稱 'main' 是保留字，只能作為函式名。`);
+                } else {
+                    if (variables.has(varDeclare[2])) {
+                        annotations.push({
+                            row: index,
+                            column: trimmed.indexOf(varDeclare[2]),
+                            text: `重複宣告的變數 '${varDeclare[2]}'`,
+                            type: "error"
+                        });
+                        tips.push(`第 ${index + 1} 行：變數 '${varDeclare[2]}' 重複宣告。`);
+                    } else {
+                        variables.add(varDeclare[2]);
+                    }
+                }
+            }
+
+            // 檢查非法變數命名（只針對真正的保留字，且不把單一字母如 x 當保留字）
+            const illegalVarName = trimmed.match(/\b(int|float|double|char|if|for|while|switch|return|break|continue|else|do|case|default|sizeof|struct|typedef|union|enum|const|static|goto|volatile|register|extern|auto|signed|unsigned|long|short)\s+([a-zA-Z_]\w*)/);
+            if (illegalVarName && illegalVarName[2] !== 'main' && cKeywords.includes(illegalVarName[2])) {
+                annotations.push({
+                    row: index,
+                    column: trimmed.indexOf(illegalVarName[2]),
+                    text: `非法變數名稱 '${illegalVarName[2]}' 是保留字，不能使用。`,
+                    type: "error"
+                });
+                tips.push(`第 ${index + 1} 行：變數名稱 '${illegalVarName[2]}' 是保留字，不能使用。`);
+            }
+
+            // 變數使用檢查前先移除字串內容
+            let codeForVarCheck = trimmed.replace(/".*?"|'.*?'/g, '');
+            const varUse = codeForVarCheck.match(/\b([a-zA-Z_]\w*)\b/g);
+            if (varUse) {
+                varUse.forEach(varName => {
+                    // 跳過純數字、型別關鍵字、保留字
+                    if (/^\d+$/.test(varName) || cKeywords.includes(varName)) return;
+                    if (!variables.has(varName) && 
+                        !functions.has(varName)) {
+                        annotations.push({
+                            row: index,
+                            column: trimmed.indexOf(varName),
+                            text: `未宣告的變數 '${varName}'`,
+                            type: "error"
+                        });
+                        tips.push(`第 ${index + 1} 行：未宣告的變數 '${varName}'。`);
+                    }
+                });
+            }
+
+            // 檢查控制流程語法
+            const controlFlow = trimmed.match(/\b(if|for|while|switch)\s*\(/);
+            if (controlFlow) {
+                const keyword = controlFlow[1];
+                if (!trimmed.includes('{') && !trimmed.includes(';')) {
+                    annotations.push({
+                        row: index,
+                        column: 0,
+                        text: `${keyword} 語句缺少大括號或分號`,
+                        type: "error"
+                    });
+                    tips.push(`第 ${index + 1} 行：${keyword} 語句缺少大括號或分號。`);
+                }
+            }
+
+            // 檢查函式呼叫
+            const funcCall = trimmed.match(/(\w+)\s*\(/);
+            if (funcCall && !functions.has(funcCall[1]) && !variables.has(funcCall[1])) {
+                annotations.push({
+                    row: index,
+                    column: trimmed.indexOf(funcCall[1]),
+                    text: `未定義的函式 '${funcCall[1]}'`,
+                    type: "error"
+                });
+                tips.push(`第 ${index + 1} 行：未定義的函式 '${funcCall[1]}'。`);
+            }
+
+            // 檢查資料型別不相容
+            const typeMismatch = trimmed.match(/(int|float|double|char)\s+(\w+)\s*=\s*([^;]+)/);
+            if (typeMismatch) {
+                const type = typeMismatch[1];
+                const value = typeMismatch[3];
+                if (type === 'int' && !/^-?\d+$/.test(value.trim())) {
+                    annotations.push({
+                        row: index,
+                        column: trimmed.indexOf(value),
+                        text: "整數型別賦值錯誤",
+                        type: "error"
+                    });
+                    tips.push(`第 ${index + 1} 行：整數型別賦值錯誤。`);
+                } else if ((type === 'float' || type === 'double') && !/^-?\d*\.?\d+$/.test(value.trim())) {
+                    annotations.push({
+                        row: index,
+                        column: trimmed.indexOf(value),
+                        text: "浮點數型別賦值錯誤",
+                        type: "error"
+                    });
+                    tips.push(`第 ${index + 1} 行：浮點數型別賦值錯誤。`);
+                } else if (type === 'char' && !/^'.'$/.test(value.trim())) {
+                    annotations.push({
+                        row: index,
+                        column: trimmed.indexOf(value),
+                        text: "字元型別賦值錯誤",
+                        type: "error"
+                    });
+                    tips.push(`第 ${index + 1} 行：字元型別賦值錯誤。`);
+                }
+            }
+
+            // 加強 return 分號檢查
+            if (/^return\b/.test(trimmed) && !trimmed.endsWith(';')) {
+                annotations.push({
+                    row: index,
+                    column: 0,
+                    text: "return 陳述句缺少分號 ';'",
+                    type: "error"
+                });
+                tips.push(`第 ${index + 1} 行：return 陳述句缺少分號 ';'。`);
+            }
+
+            // printf 少分號檢查
+            if (/printf\s*\(.*\)/.test(trimmed) && !trimmed.endsWith(';')) {
+                annotations.push({
+                    row: index,
+                    column: 0,
+                    text: "printf 陳述句缺少分號 ';'",
+                    type: "error"
+                });
+                tips.push(`第 ${index + 1} 行：printf 陳述句缺少分號 ';'。`);
+            }
+
+            // scanf 少分號檢查
+            if (/scanf\s*\(.*\)/.test(trimmed) && !trimmed.endsWith(';')) {
+                annotations.push({
+                    row: index,
+                    column: 0,
+                    text: "scanf 陳述句缺少分號 ';'",
+                    type: "error"
+                });
+                tips.push(`第 ${index + 1} 行：scanf 陳述句缺少分號 ';'。`);
+            }
+
+            // int main 拼音錯誤檢查（更彈性，支援多種格式）
+            const mainTypo = trimmed.match(/int\s+(mian|maim|man)\s*\(.*\)\s*[\{;]?/);
+            if (mainTypo) {
+                annotations.push({
+                    row: index,
+                    column: trimmed.indexOf(mainTypo[1]),
+                    text: `main 函式名稱拼音錯誤，應為 'main'。`,
+                    type: "error"
+                });
+                tips.push(`第 ${index + 1} 行：main 函式名稱拼音錯誤，應為 'main'。`);
+            }
+        });
+
+        // 檢查未閉合的括號
+        if (bracketStack.length > 0) {
+            const lastBracket = bracketStack[bracketStack.length - 1];
+            annotations.push({
+                row: lastBracket.line,
+                column: lastBracket.pos,
+                text: "未閉合的左括號 '('",
+                type: "error"
+            });
+            tips.push(`第 ${lastBracket.line + 1} 行：未閉合的左括號 '('。`);
+        }
+
+        // 檢查未閉合的引號
+        if (quoteStack.length > 0) {
+            annotations.push({
+                row: lines.length - 1,
+                column: lines[lines.length - 1].length - 1,
+                text: "未閉合的引號",
+                type: "error"
+            });
+            tips.push("程式碼中有未閉合的引號。");
+        }
+
+        editor.session.setAnnotations(annotations);
+        document.getElementById("tipsContent").innerHTML = tips.length ? tips.join('<br>') : "目前尚未偵測到內容錯誤。";
+    }
+
+    // 編輯器變更監聽
+    editor.session.on('change', () => {
+        hasChanged = true;
+        checkErrors();
+    });
+
+    // 執行按鈕
+    document.getElementById("runBtn").addEventListener("click", function() {
+        const code = editor.getValue();
+        document.getElementById("outputContent").textContent = code;
+    });
+
+    // 初始不檢查
+    editor.session.clearAnnotations();
+</script>
+
+</body>
+
+</html>
